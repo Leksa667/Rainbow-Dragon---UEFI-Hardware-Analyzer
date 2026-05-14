@@ -7,6 +7,11 @@
 
   ## Overview
 
+
+
+<img width="874" height="1180" alt="rainbowdragon" src="https://github.com/user-attachments/assets/7c756663-66f3-47d3-ae76-df1f2c831e5c" />
+
+
   Rainbow Dragon is built as a standalone UEFI application: `DragonTool.efi`.
 
   Once launched from an EFI shell or bootable FAT partition, it opens an interactive text-based interface that allows the user to inspect firmware-exposed hardware data directly from UEFI.
