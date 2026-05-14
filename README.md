@@ -12,7 +12,15 @@
   Once launched from an EFI shell or bootable FAT partition, it opens an interactive text-based interface that allows the user to inspect firmware-exposed hardware data directly from UEFI.
 
   The project is read-only by default in its current interface and is mainly intended as an analysis and diagnostic tool. Some SMBIOS patching/research code exists in the source tree, but it is not exposed as the main public workflow.
+  
+  ## Credits
 
+  Rainbow Dragon was built from an initial foundation based on the Negative Spoofer project by Samuel Tulach.
+
+  Special thanks to Samuel Tulach for the original Negative Spoofer project, which provided the base work.
+
+  Original project: https://github.com/SamuelTulach/negativespoofer
+  
   ## Features
 
   - Interactive UEFI menu interface
