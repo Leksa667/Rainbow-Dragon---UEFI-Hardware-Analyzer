@@ -4,7 +4,9 @@
 
 #define COLOR_NORMAL 0x07
 #define COLOR_TITLE  0x0B
-#define COLOR_DIM    0x08
+#define COLOR_DIM    0x0F
+#define COLOR_HELP   0x0F
+#define COLOR_SEPARATOR 0x08
 #define COLOR_SUCCESS 0x0A
 
 static void SetColor(UINTN attr)
@@ -14,7 +16,7 @@ static void SetColor(UINTN attr)
 
 static void PrintSeparator(void)
 {
-    SetColor(COLOR_DIM);
+    SetColor(COLOR_SEPARATOR);
     Print(L"------------------------------------------------------------\n");
     SetColor(COLOR_NORMAL);
 }
@@ -896,7 +898,7 @@ static BOOLEAN sPgCheck(UINTN n)
     if (sPgExit) return FALSE;
     sPgLine += n;
     if (sPgLine >= sPgRows) {
-        SetColor(COLOR_DIM);
+        SetColor(COLOR_HELP);
         Print(L"  --- [any key: continue, Q: quit] ---\n");
         SetColor(COLOR_NORMAL);
         UINTN idx;

@@ -13,8 +13,16 @@ void PatchAll(SMBIOS_STRUCTURE_TABLE* entry);
 
 /* Persistent HWID backup — saved at first spoof, restored on demand */
 BOOLEAN HasSmbiosBackup(void);
+UINT32  SmbiosBackupFieldCount(void);
 void    SaveSmbiosDefaults(SMBIOS_STRUCTURE_TABLE* entry);
 void    RestoreSmbiosDefaults(SMBIOS_STRUCTURE_TABLE* entry);
+void    ShowSmbiosBackupDiff(SMBIOS_STRUCTURE_TABLE* entry);
+
+/* System UUID raw-field backup (Type 1 offset 0x08, 16 bytes) */
+BOOLEAN HasSystemUuidBackup(void);
+void    SaveSystemUuidBackup(SMBIOS_STRUCTURE_TABLE* entry);
+void    RestoreSystemUuidBackup(SMBIOS_STRUCTURE_TABLE* entry);
+void    ShowSystemUuidDiff(SMBIOS_STRUCTURE_TABLE* entry);
 
 /* CPU speed raw-field backup (Type 4 offsets 0x14/0x16) */
 BOOLEAN HasCpuSpeedBackup(void);

@@ -3,6 +3,13 @@
 #include "smbios.h"
 #include "utils.h"
 
+static UINTN gPatchErrors = 0;
+
+static void RecordPatchError(void)
+{
+    gPatchErrors++;
+}
+
 /* ── String helpers ──────────────────────────────────── */
 
 static UINTN AStrLen(const char* s)
@@ -18,6 +25,41 @@ static BOOLEAN AStrEq(const char* a, const char* b)
     if (!a || !b) return FALSE;
     while (*a && *b && *a == *b) { a++; b++; }
     return *a == *b;
+}
+
+static UINTN AStrTrimLen(const char* s)
+{
+    UINTN len = AStrLen(s);
+    while (len > 0 && s[len - 1] == ' ')
+        len--;
+    return len;
+}
+
+static BOOLEAN AStrEqTrimRight(const char* a, const char* b)
+{
+    if (!a || !b) return FALSE;
+    UINTN al = AStrTrimLen(a);
+    UINTN bl = AStrTrimLen(b);
+    if (al != bl) return FALSE;
+    for (UINTN i = 0; i < al; i++)
+        if (a[i] != b[i])
+            return FALSE;
+    return TRUE;
+}
+
+static BOOLEAN BuildSizedString(char* out, UINTN outSize, const char* src, UINTN targetLen)
+{
+    if (!out || !src || outSize == 0 || targetLen >= outSize)
+        return FALSE;
+
+    UINTN srcLen = AStrLen(src);
+    UINTN copyLen = srcLen < targetLen ? srcLen : targetLen;
+    if (copyLen)
+        CopyMem(out, (VOID*)src, copyLen);
+    for (UINTN i = copyLen; i < targetLen; i++)
+        out[i] = ' ';
+    out[targetLen] = '\0';
+    return TRUE;
 }
 
 /* ── Print ASCII string via Print(L"%a", ...) ────────── */
@@ -325,21 +367,14 @@ static void SpoofField(SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field,
 
     int pick = RandomNumber(0, (int)poolCount - 1);
     const char* repl = pool[pick];
-    UINTN rl = AStrLen(repl);
-
-    if (rl < ol)
+    char padded[256];
+    if (!BuildSizedString(padded, sizeof(padded), repl, ol))
     {
-        EditString(table, field, repl);
+        RecordPatchError();
+        Print(L"  %-22s [too long]\n", label);
+        return;
     }
-    else
-    {
-        char padded[256];
-        UINTN copyLen = ol;
-        if (copyLen > sizeof(padded) - 1) copyLen = sizeof(padded) - 1;
-        CopyMem(padded, (VOID*)repl, copyLen);
-        padded[copyLen] = '\0';
-        EditString(table, field, padded);
-    }
+    EditString(table, field, padded);
 
     Print(L"  %-22s '%a' → '%a'\n", label, oldBuf, repl);
 }
@@ -367,21 +402,14 @@ static void SpoofSerial(SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field,
     if (ol > 200) return;
     char buf[256];
     GenSerial(buf, ol);
-    UINTN rl = AStrLen(buf);
-
-    if (rl < ol)
+    char padded[256];
+    if (!BuildSizedString(padded, sizeof(padded), buf, ol))
     {
-        EditString(table, field, buf);
+        RecordPatchError();
+        Print(L"  %-22s [too long]\n", label);
+        return;
     }
-    else
-    {
-        char padded[256];
-        UINTN copyLen = ol;
-        if (copyLen > sizeof(padded) - 1) copyLen = sizeof(padded) - 1;
-        CopyMem(padded, (VOID*)buf, copyLen);
-        padded[copyLen] = '\0';
-        EditString(table, field, padded);
-    }
+    EditString(table, field, padded);
 
     Print(L"  %-22s '%a' → '%a'\n", label, oldBuf, buf);
 }
@@ -484,16 +512,15 @@ void PatchType4(SMBIOS_STRUCTURE_TABLE* entry)
             if (AStrEq(POOL_CPU_SWAP[i].match, origVer))
             {
                 const char* repl = POOL_CPU_SWAP[i].replace;
-                UINTN rl = AStrLen(repl);
-                if (rl < ol)
-                    EditString(t, &t.Type4->ProcessorVersion, repl);
+                char padded[256];
+                if (BuildSizedString(padded, sizeof(padded), repl, ol))
+                {
+                    EditString(t, &t.Type4->ProcessorVersion, padded);
+                }
                 else
                 {
-                    char padded[256];
-                    UINTN copyLen = ol < sizeof(padded)-1 ? ol : sizeof(padded)-1;
-                    CopyMem(padded, (VOID*)repl, copyLen);
-                    padded[copyLen] = '\0';
-                    EditString(t, &t.Type4->ProcessorVersion, padded);
+                    RecordPatchError();
+                    Print(L"  %-22s [too long]\n", L"Processor Version");
                 }
                 Print(L"  %-22s '%a' → '%a'\n", L"Processor Version", oldBuf, repl);
                 matched = TRUE;
@@ -737,7 +764,7 @@ void PatchType43(SMBIOS_STRUCTURE_TABLE* entry)
 /* ── Mini color helpers (standalone, no diagnostics.h dep) ── */
 
 #define BK_COLOR_OK      0x0A
-#define BK_COLOR_DIM     0x08
+#define BK_COLOR_DIM     0x0F
 #define BK_COLOR_NORMAL  0x07
 
 static void BkSetColor(UINTN a) { gST->ConOut->SetAttribute(gST->ConOut, a); }
@@ -830,6 +857,48 @@ BOOLEAN HasSmbiosBackup(void)
     UINTN vs = 0;
     EFI_STATUS st = gRT->GetVariable(BACKUP_VAR, &gRdBackupGuid, NULL, &vs, NULL);
     return (st == EFI_SUCCESS || st == EFI_BUFFER_TOO_SMALL);
+}
+
+static BOOLEAN LoadSmbiosBackup(UINT8** outBuf, UINTN* outSize, UINT32* outCount)
+{
+    if (!outBuf || !outSize || !outCount) return FALSE;
+    *outBuf = NULL;
+    *outSize = 0;
+    *outCount = 0;
+
+    UINTN vs = 0;
+    EFI_STATUS st = gRT->GetVariable(BACKUP_VAR, &gRdBackupGuid, NULL, &vs, NULL);
+    if (st != EFI_BUFFER_TOO_SMALL && st != EFI_SUCCESS)
+        return FALSE;
+    if (vs < 8)
+        return FALSE;
+
+    UINT8* buf = AllocatePool(vs);
+    if (!buf)
+        return FALSE;
+
+    st = gRT->GetVariable(BACKUP_VAR, &gRdBackupGuid, NULL, &vs, buf);
+    if (EFI_ERROR(st) || *(UINT32*)buf != BACKUP_SIG)
+    {
+        FreePool(buf);
+        return FALSE;
+    }
+
+    *outBuf = buf;
+    *outSize = vs;
+    *outCount = *(UINT32*)(buf + 4);
+    return TRUE;
+}
+
+UINT32 SmbiosBackupFieldCount(void)
+{
+    UINT8* buf = NULL;
+    UINTN size = 0;
+    UINT32 count = 0;
+    if (!LoadSmbiosBackup(&buf, &size, &count))
+        return 0;
+    FreePool(buf);
+    return count;
 }
 
 void SaveSmbiosDefaults(SMBIOS_STRUCTURE_TABLE *entry)
@@ -930,9 +999,14 @@ void SaveSmbiosDefaults(SMBIOS_STRUCTURE_TABLE *entry)
     *(UINT32*)(buf + 0) = BACKUP_SIG;
     *(UINT32*)(buf + 4) = cnt;
 
-    gRT->SetVariable(BACKUP_VAR, &gRdBackupGuid,
+    EFI_STATUS saveStatus = gRT->SetVariable(BACKUP_VAR, &gRdBackupGuid,
         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS,
         off, buf);
+
+    if (!EFI_ERROR(saveStatus))
+        Print(L"  [BACKUP] Saved original SMBIOS fields: %u\n", cnt);
+    else
+        Print(L"  [WARN] SMBIOS backup save failed: %r\n", saveStatus);
 
 done:
     FreePool(buf);
@@ -1000,21 +1074,16 @@ void RestoreSmbiosDefaults(SMBIOS_STRUCTURE_TABLE *entry)
         SMBIOS_STRING *field = (SMBIOS_STRING*)&idxHolder;
 
         UINTN curLen = StringLength(cur, 0);
-        UINTN bakLen = StringLength((const char*)e->Value, 128);
-
-        if (bakLen < curLen)
+        char padded[256];
+        if (BuildSizedString(padded, sizeof(padded), (const char*)e->Value, curLen))
         {
-            char padded[256];
-            UINTN copyLen = curLen < sizeof(padded)-1 ? curLen : sizeof(padded)-1;
-            CopyMem(padded, (VOID*)e->Value, copyLen);
-            padded[copyLen] = '\0';
             EditString(t, field, padded);
+            restored++;
         }
         else
         {
-            EditString(t, field, (const char*)e->Value);
+            skipped++;
         }
-        restored++;
     }
 
     Print(L"\n[OK] %d fields restored, %d skipped (table not found)\n", restored, skipped);
@@ -1022,6 +1091,233 @@ void RestoreSmbiosDefaults(SMBIOS_STRUCTURE_TABLE *entry)
 }
 
 /* ── CPU speed raw-field backup (Type 4 offsets 0x14/0x16) ── */
+
+void ShowSmbiosBackupDiff(SMBIOS_STRUCTURE_TABLE *entry)
+{
+    if (!entry || !entry->TableAddress)
+    {
+        Print(L"\n[FAIL] No SMBIOS table\n");
+        return;
+    }
+
+    UINT8* buf = NULL;
+    UINTN vs = 0;
+    UINT32 cnt = 0;
+    if (!LoadSmbiosBackup(&buf, &vs, &cnt))
+    {
+        Print(L"\n[INFO] No SMBIOS backup found. Run Smart Spoof once to capture defaults.\n");
+        return;
+    }
+
+    Print(L"\n[DIFF] SMBIOS current values compared with saved defaults\n");
+
+    SmbiosSetActiveTableBounds(entry);
+    UINTN off = 8;
+    UINTN changed = 0, same = 0, skipped = 0, printed = 0;
+
+    for (UINT32 i = 0; i < cnt; i++)
+    {
+        if (off + sizeof(RD_BACKUP_ENTRY) > vs)
+            break;
+
+        RD_BACKUP_ENTRY *e = (RD_BACKUP_ENTRY*)(buf + off);
+        off += sizeof(RD_BACKUP_ENTRY);
+
+        SMBIOS_STRUCTURE_POINTER t = FindByHandle(entry, (UINT8)e->Type, e->Handle);
+        if (!t.Raw)
+        {
+            skipped++;
+            continue;
+        }
+
+        const char *cur = GetStringAtIndex(t, e->StringIndex);
+        if (!cur)
+        {
+            skipped++;
+            continue;
+        }
+
+        if (AStrEqTrimRight(cur, (const char*)e->Value))
+        {
+            same++;
+            continue;
+        }
+
+        changed++;
+        if (printed < 80)
+        {
+            Print(L"  Type %u handle 0x%04x str %u: '%a' -> '%a'\n",
+                  e->Type, e->Handle, e->StringIndex, (const char*)e->Value, cur);
+            printed++;
+        }
+    }
+
+    if (changed > printed)
+        Print(L"  ... %u more changed field(s)\n", changed - printed);
+
+    Print(L"\n[DIFF] changed=%u same=%u skipped=%u saved=%u\n",
+          changed, same, skipped, cnt);
+    FreePool(buf);
+}
+
+/* System UUID raw-field backup (Type 1 offset 0x08, 16 bytes) */
+
+#define SYSTEM_UUID_VAR  L"RdSystemUuid"
+static EFI_GUID gRdSystemUuidGuid =
+    { 0x73797575, 0x6964, 0x426b,
+      { 0x70, 0x52, 0x61, 0x69, 0x6e, 0x62, 0x6f, 0x77 } };
+
+static BOOLEAN SystemUuidPresent(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!entry || !entry->TableAddress)
+        return FALSE;
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 1, 0);
+    return t.Raw && t.Hdr->Length >= 0x18;
+}
+
+static void PrintUuidBytes(const UINT8* uuid)
+{
+    Print(L"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+          uuid[0], uuid[1], uuid[2], uuid[3],
+          uuid[4], uuid[5], uuid[6], uuid[7],
+          uuid[8], uuid[9], uuid[10], uuid[11],
+          uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+
+static BOOLEAN UuidEq(const UINT8* a, const UINT8* b)
+{
+    for (UINTN i = 0; i < 16; i++)
+        if (a[i] != b[i])
+            return FALSE;
+    return TRUE;
+}
+
+BOOLEAN HasSystemUuidBackup(void)
+{
+    UINTN vs = 0;
+    EFI_STATUS st = gRT->GetVariable(SYSTEM_UUID_VAR, &gRdSystemUuidGuid, NULL, &vs, NULL);
+    return (st == EFI_SUCCESS || st == EFI_BUFFER_TOO_SMALL);
+}
+
+void SaveSystemUuidBackup(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!SystemUuidPresent(entry))
+        return;
+    if (HasSystemUuidBackup())
+    {
+        Print(L"  [BACKUP] Existing System UUID backup kept\n");
+        return;
+    }
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 1, 0);
+    const UINT8* uuid = t.Raw + 0x08;
+
+    EFI_STATUS st = gRT->SetVariable(SYSTEM_UUID_VAR, &gRdSystemUuidGuid,
+        EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS,
+        16, (VOID*)uuid);
+
+    if (!EFI_ERROR(st))
+    {
+        Print(L"  [BACKUP] Saved original System UUID: ");
+        PrintUuidBytes(uuid);
+        Print(L"\n");
+    }
+    else
+    {
+        Print(L"  [WARN] System UUID backup save failed: %r\n", st);
+    }
+}
+
+void RestoreSystemUuidBackup(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!SystemUuidPresent(entry))
+    {
+        Print(L"\n[INFO] System UUID field not available\n");
+        return;
+    }
+    if (!HasSystemUuidBackup())
+    {
+        Print(L"\n[INFO] No System UUID backup found\n");
+        return;
+    }
+
+    UINT8 backup[16];
+    UINTN vs = sizeof(backup);
+    EFI_STATUS st = gRT->GetVariable(SYSTEM_UUID_VAR, &gRdSystemUuidGuid, NULL, &vs, backup);
+    if (EFI_ERROR(st) || vs != sizeof(backup))
+    {
+        Print(L"\n[FAIL] System UUID backup corrupted\n");
+        return;
+    }
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 1, 0);
+    UINT8 cur[16];
+    CopyMem(cur, t.Raw + 0x08, sizeof(cur));
+    CopyMem(t.Raw + 0x08, backup, sizeof(backup));
+
+    Print(L"\n[OK] System UUID restored: ");
+    PrintUuidBytes(cur);
+    Print(L" -> ");
+    PrintUuidBytes(backup);
+    Print(L"\n");
+}
+
+static void PatchSystemUuid(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!SystemUuidPresent(entry))
+        return;
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 1, 0);
+    UINT8 oldUuid[16];
+    UINT8 newUuid[16];
+    CopyMem(oldUuid, t.Raw + 0x08, sizeof(oldUuid));
+
+    for (UINTN i = 0; i < 16; i++)
+        newUuid[i] = (UINT8)RandomNumber(0, 255);
+    newUuid[6] = (UINT8)((newUuid[6] & 0x0F) | 0x40);
+    newUuid[8] = (UINT8)((newUuid[8] & 0x3F) | 0x80);
+
+    CopyMem(t.Raw + 0x08, newUuid, sizeof(newUuid));
+
+    Print(L"\n  %-22s ", L"System UUID");
+    PrintUuidBytes(oldUuid);
+    Print(L" -> ");
+    PrintUuidBytes(newUuid);
+    Print(L"\n");
+}
+
+void ShowSystemUuidDiff(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!SystemUuidPresent(entry))
+    {
+        Print(L"\n[DIFF] System UUID unavailable\n");
+        return;
+    }
+    if (!HasSystemUuidBackup())
+    {
+        Print(L"\n[DIFF] No System UUID backup found\n");
+        return;
+    }
+
+    UINT8 backup[16];
+    UINTN vs = sizeof(backup);
+    EFI_STATUS st = gRT->GetVariable(SYSTEM_UUID_VAR, &gRdSystemUuidGuid, NULL, &vs, backup);
+    if (EFI_ERROR(st) || vs != sizeof(backup))
+    {
+        Print(L"\n[DIFF] System UUID backup corrupted\n");
+        return;
+    }
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 1, 0);
+    UINT8* cur = t.Raw + 0x08;
+
+    Print(L"\n[DIFF] System UUID: ");
+    PrintUuidBytes(backup);
+    Print(L" -> ");
+    PrintUuidBytes(cur);
+    Print(UuidEq(backup, cur) ? L" [same]\n" : L" [changed]\n");
+}
 
 #define CPU_SPEED_VAR  L"RdCpuSpeed"
 static EFI_GUID gRdCpuSpeedGuid =
@@ -1037,8 +1333,13 @@ BOOLEAN HasCpuSpeedBackup(void)
 
 void SaveCpuSpeedBackup(SMBIOS_STRUCTURE_TABLE* entry)
 {
-    if (!entry || !entry->TableAddress || HasCpuSpeedBackup())
+    if (!entry || !entry->TableAddress)
         return;
+    if (HasCpuSpeedBackup())
+    {
+        Print(L"  [BACKUP] Existing CPU raw-field backup kept\n");
+        return;
+    }
 
     SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 4, 0);
     if (!t.Raw || t.Hdr->Length < 0x17)
@@ -1098,6 +1399,15 @@ void RestoreCpuSpeedBackup(SMBIOS_STRUCTURE_TABLE* entry)
 
 /* ── Entry point ─────────────────────────────────────── */
 
+static BOOLEAN CpuSpeedFieldsPresent(SMBIOS_STRUCTURE_TABLE* entry)
+{
+    if (!entry || !entry->TableAddress)
+        return FALSE;
+
+    SMBIOS_STRUCTURE_POINTER t = FindTableByType(entry, 4, 0);
+    return t.Raw && t.Hdr->Length >= 0x17;
+}
+
 void PatchAll(SMBIOS_STRUCTURE_TABLE* entry)
 {
     if (!entry || !entry->TableAddress)
@@ -1106,14 +1416,44 @@ void PatchAll(SMBIOS_STRUCTURE_TABLE* entry)
         return;
     }
 
+    BOOLEAN hadSmbiosBackup = HasSmbiosBackup();
+    BOOLEAN hadCpuBackup = HasCpuSpeedBackup();
+
     /* Save original values to NV variable on first run */
     SaveSmbiosDefaults(entry);
+    SaveSystemUuidBackup(entry);
     SaveCpuSpeedBackup(entry);
+
+    if (hadSmbiosBackup)
+        Print(L"  [BACKUP] Existing SMBIOS defaults kept (%u fields)\n", SmbiosBackupFieldCount());
+    if (hadCpuBackup)
+        Print(L"  [BACKUP] Existing CPU raw-field backup kept\n");
+
+    if (!HasSmbiosBackup())
+    {
+        Print(L"\n[FAIL] SMBIOS backup is missing. Spoof cancelled before changes.\n");
+        return;
+    }
+
+    if (CpuSpeedFieldsPresent(entry) && !HasCpuSpeedBackup())
+    {
+        Print(L"\n[FAIL] CPU raw-field backup is missing. Spoof cancelled before changes.\n");
+        return;
+    }
+
+    if (SystemUuidPresent(entry) && !HasSystemUuidBackup())
+    {
+        Print(L"\n[FAIL] System UUID backup is missing. Spoof cancelled before changes.\n");
+        return;
+    }
+
+    gPatchErrors = 0;
 
     Print(L"\n[WORK] Smart-spoofing all SMBIOS tables...\n");
 
     PatchType0(entry);
     PatchType1(entry);
+    PatchSystemUuid(entry);
     PatchType2(entry);
     PatchType3(entry);
     PatchType4(entry);
@@ -1128,6 +1468,20 @@ void PatchAll(SMBIOS_STRUCTURE_TABLE* entry)
     PatchType39(entry);
     PatchType41(entry);
     PatchType43(entry);
+
+    if (gPatchErrors > 0)
+    {
+        Print(L"\n[WARN] %u patch error(s) detected. Rolling back to saved defaults...\n", gPatchErrors);
+        RestoreSmbiosDefaults(entry);
+        RestoreSystemUuidBackup(entry);
+        RestoreCpuSpeedBackup(entry);
+        ShowSmbiosBackupDiff(entry);
+        ShowSystemUuidDiff(entry);
+        Print(L"\n[FAIL] Smart spoof rolled back because one or more fields failed.\n");
+        return;
+    }
+    ShowSmbiosBackupDiff(entry);
+    ShowSystemUuidDiff(entry);
 
     Print(L"\n[OK] Smart spoofing complete — all changes are in-memory only\n");
 }

@@ -11,7 +11,9 @@
 #define COLOR_OK       0x0A
 #define COLOR_WARN     0x0E
 #define COLOR_BAD      0x0C
-#define COLOR_DIM      0x08
+#define COLOR_DIM      0x0F
+#define COLOR_HELP     0x0F
+#define COLOR_SEPARATOR 0x08
 #define COLOR_SELECTED 0x1F
 
 #define RD_SCAN_UP        0x0001
@@ -141,7 +143,7 @@ static void SetColor(UINTN attr)
 
 static void Rule(void)
 {
-    SetColor(COLOR_DIM);
+    SetColor(COLOR_SEPARATOR);
     Print(L"  ------------------------------------------------------------\n");
     SetColor(COLOR_NORMAL);
 }
@@ -186,7 +188,7 @@ static BOOLEAN PgCheck(UINTN n)
     if (g_PgExit) return FALSE;
     g_PgLine += n;
     if (g_PgLine >= g_PgRows) {
-        SetColor(COLOR_DIM);
+        SetColor(COLOR_HELP);
         Print(L"  [SPACE/PgDn: next  UP/PgUp: prev page  Q: quit]\n");
         SetColor(COLOR_NORMAL);
         while (TRUE)
@@ -2165,7 +2167,7 @@ static void BrowserHeader(UINTN tool, UINTN offset, UINTN maxOffset)
 static void BrowserFooter(void)
 {
     Print(L"\n");
-    SetColor(COLOR_DIM);
+    SetColor(COLOR_HELP);
     Print(L"  Left/Right: tools   Up/Down: scroll   PgUp/PgDn: page   Home/End   Enter: select   Q/Esc: back\n");
     SetColor(COLOR_NORMAL);
 }
@@ -3149,7 +3151,7 @@ void DisplayCompatibilityMatrix(const SMBIOS_STRUCTURE_TABLE* entry)
     }
 
     CPanel(L"Runtime Notes");
-    Print(L"  Active menu:       read-only diagnostics\n");
+    Print(L"  Active menu:       firmware toolkit\n");
     Print(L"  Graphics fallback: text menu available\n");
     Print(L"  Build target:      %s\n", BuildArch());
     Print(L"  Output binary:     DragonTool.efi\n");
@@ -3162,8 +3164,8 @@ void DisplayCompatibilityMatrix(const SMBIOS_STRUCTURE_TABLE* entry)
 
 // ─── Early Boot Scanner ─────────────────────────────────────────────────
 // Enumerates all UEFI/DXE drivers loaded before Windows starts.
-// Windows kernel-mode drivers (vgk.sys, ipt.sys, etc.) load after UEFI
-// hands off to the OS and are NOT visible at this level.
+// Windows kernel-mode drivers load after UEFI hands off to the OS and are
+// not visible at this level.
 
 typedef struct {
     EFI_HANDLE       Handle;
@@ -3272,11 +3274,11 @@ void ShowBootDriverScanner(void)
         Print(L"Rainbow Dragon - Early Boot Scanner\n");
         SetColor(COLOR_NORMAL);
 
-        SetColor(COLOR_DIM);
+        SetColor(COLOR_SEPARATOR);
         for (UINTN i = 0; i < cols - 2; i++) Print(L"-");
         Print(L"\n  %d EFI driver(s) loaded before Windows starts", (UINTN)valid);
         SetColor(COLOR_WARN);
-        Print(L"  [vk.sys / ipt.sys NOT visible from UEFI]\n");
+        Print(L"  [Windows kernel drivers are not visible from UEFI]\n");
         SetColor(COLOR_NORMAL);
 
         for (UINTN i = 0; i < pageSize && offset + i < valid; i++)
@@ -3294,11 +3296,12 @@ void ShowBootDriverScanner(void)
             if (cur) SetColor(COLOR_NORMAL);
         }
 
-        SetColor(COLOR_DIM);
+        SetColor(COLOR_SEPARATOR);
         for (UINTN i = 0; i < cols - 2; i++) Print(L"-");
         Print(L"\n  Page %d/%d  |  Driver %d/%d\n",
               (UINTN)(offset / pageSize) + 1, (UINTN)((valid + pageSize - 1) / pageSize),
               (UINTN)cursor + 1, (UINTN)valid);
+        SetColor(COLOR_HELP);
         Print(L"  UP/DOWN: navigate | PgUp/PgDn: page | Enter: detail | Q/ESC: quit\n");
         SetColor(COLOR_NORMAL);
 
@@ -3406,10 +3409,57 @@ static const UINTN LEKSA_COLORS[] = {
 };
 #define LEKSA_COLOR_COUNT 10
 
+static BOOLEAN ConfirmSmartSpoof(void)
+{
+    Print(L"\n");
+    SetColor(COLOR_WARN);
+    Print(L"  Smart SMBIOS spoof confirmation\n");
+    SetColor(COLOR_NORMAL);
+    Print(L"  - Original SMBIOS values are saved before any change.\n");
+    Print(L"  - Existing backups are kept and never overwritten.\n");
+    Print(L"  - If an internal patch error is detected, defaults are restored.\n");
+    Print(L"  - Changes are in-memory and should reset on reboot.\n\n");
+    SetColor(COLOR_WARN);
+    Print(L"  Continue? [y/N]: ");
+    SetColor(COLOR_NORMAL);
+
+    UINTN idx = 0;
+    EFI_INPUT_KEY key;
+    gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &idx);
+    if (EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &key)))
+        return FALSE;
+    Print(L"\n");
+    return key.UnicodeChar == L'y' || key.UnicodeChar == L'Y';
+}
+
+static BOOLEAN ConfirmAcpiSpoof(void)
+{
+    Print(L"\n");
+    SetColor(COLOR_WARN);
+    Print(L"  ACPI DSDT/SSDT spoof confirmation\n");
+    SetColor(COLOR_NORMAL);
+    Print(L"  - ACPI OEM fields will be changed in memory.\n");
+    Print(L"  - Checksums are recalculated after each table patch.\n");
+    Print(L"  - A table is rolled back immediately if checksum validation fails.\n");
+    Print(L"  - Changes are in-memory and should reset on reboot.\n\n");
+    SetColor(COLOR_WARN);
+    Print(L"  Continue? [y/N]: ");
+    SetColor(COLOR_NORMAL);
+
+    UINTN idx = 0;
+    EFI_INPUT_KEY key;
+    gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &idx);
+    if (EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &key)))
+        return FALSE;
+    Print(L"\n");
+    return key.UnicodeChar == L'y' || key.UnicodeChar == L'Y';
+}
+
 void ShowLetsaMod(void)
 {
     const CHAR16* items[] = {
         L"Smart Spoof All SMBIOS",
+        L"Show HWID Diff From Backup",
         L"ACPI DSDT/SSDT Spoof",
         L"Early Boot Scanner",
         L"Backup CPU Speed Raw Fields",
@@ -3463,7 +3513,7 @@ void ShowLetsaMod(void)
         }
 
         Print(L"\n");
-        SetColor(COLOR_DIM);
+        SetColor(COLOR_HELP);
         pad = (46 < cols) ? (cols - 46) / 2 : 0;
         for (UINTN i = 0; i < pad; i++) Print(L" ");
         Print(L"Arrows or WASD to navigate   Enter to select\n");
@@ -3490,7 +3540,10 @@ void ShowLetsaMod(void)
                 SMBIOS_STRUCTURE_TABLE* entry = FindEntry();
                 if (entry && entry->TableAddress)
                 {
-                    PatchAll(entry);
+                    if (ConfirmSmartSpoof())
+                        PatchAll(entry);
+                    else
+                        Print(L"\n  [INFO] Smart spoof cancelled\n");
                 }
                 else
                 {
@@ -3501,13 +3554,31 @@ void ShowLetsaMod(void)
             }
             else if (selected == 1)
             {
-                PatchAllAcpi();
+                SMBIOS_STRUCTURE_TABLE* entry = FindEntry();
+                if (entry && entry->TableAddress)
+                {
+                    ShowSmbiosBackupDiff(entry);
+                    ShowSystemUuidDiff(entry);
+                }
+                else
+                {
+                    SetColor(COLOR_WARN);
+                    Print(L"\n  [FAIL] No SMBIOS table available!\n");
+                    SetColor(COLOR_NORMAL);
+                }
             }
             else if (selected == 2)
             {
-                ShowBootDriverScanner();
+                if (ConfirmAcpiSpoof())
+                    PatchAllAcpi();
+                else
+                    Print(L"\n  [INFO] ACPI spoof cancelled\n");
             }
             else if (selected == 3)
+            {
+                ShowBootDriverScanner();
+            }
+            else if (selected == 4)
             {
                 SMBIOS_STRUCTURE_TABLE* entry = FindEntry();
                 if (entry && entry->TableAddress)
@@ -3521,7 +3592,7 @@ void ShowLetsaMod(void)
                     SetColor(COLOR_NORMAL);
                 }
             }
-            else if (selected == 4)
+            else if (selected == 5)
             {
                 SMBIOS_STRUCTURE_TABLE* entry = FindEntry();
                 if (entry && entry->TableAddress)
@@ -3535,12 +3606,14 @@ void ShowLetsaMod(void)
                     SetColor(COLOR_NORMAL);
                 }
             }
-            else if (selected == 5)
+            else if (selected == 6)
             {
                 SMBIOS_STRUCTURE_TABLE* entry = FindEntry();
                 if (entry && entry->TableAddress)
                 {
                     RestoreSmbiosDefaults(entry);
+                    RestoreSystemUuidBackup(entry);
+                    RestoreCpuSpeedBackup(entry);
                 }
                 else
                 {

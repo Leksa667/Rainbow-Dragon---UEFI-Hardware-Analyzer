@@ -515,7 +515,7 @@ MenuChoice ShowMainMenu(void)
         Rainbow(); Print(L"\n");
 
         SetColor(COLOR_SUBTITLE);
-        PCentered(L"read-only UEFI analysis desk\n");
+        PCentered(L"UEFI firmware toolkit\n");
         PCentered(L"SMBIOS  ACPI  MEMORY  BOOT  GOP  FIRMWARE  SECURITY\n");
         SetColor(COLOR_SUCCESS);
         PCentered(L"Created by Leksa667 - Netari\n");

@@ -4,7 +4,7 @@
 #define COLOR_NORMAL   0x07
 #define COLOR_OK       0x0A
 #define COLOR_WARN     0x0E
-#define COLOR_DIM      0x08
+#define COLOR_DIM      0x0F
 #define COLOR_BAD      0x0C
 
 typedef struct
@@ -88,14 +88,15 @@ static void RandomFill(UINT8* buf, UINTN len)
     }
 }
 
-static void PatchAcpiHeader(RD_ACPI_HEADER* hdr, const CHAR16* label)
+static BOOLEAN PatchAcpiHeader(RD_ACPI_HEADER* hdr, const CHAR16* label)
 {
     if (!hdr || hdr->Length < sizeof(RD_ACPI_HEADER))
-        return;
+        return FALSE;
 
     UINT8 oldOem[6];
     UINT8 oldTable[8];
     UINT32 oldRev = hdr->OemRevision;
+    UINT8 oldChecksum = hdr->Checksum;
 
     CopyMem(oldOem, hdr->OemId, 6);
     CopyMem(oldTable, hdr->OemTableId, 8);
@@ -107,6 +108,19 @@ static void PatchAcpiHeader(RD_ACPI_HEADER* hdr, const CHAR16* label)
     hdr->OemRevision = (UINT32)((UINTN)gRT ^ (UINTN)hdr ^ 0xAC91);
 
     FixChecksum(hdr);
+
+    BOOLEAN checksumOk = AcpiChecksum((const UINT8*)hdr, hdr->Length) == 0;
+    if (!checksumOk)
+    {
+        CopyMem(hdr->OemId, oldOem, 6);
+        CopyMem(hdr->OemTableId, oldTable, 8);
+        hdr->OemRevision = oldRev;
+        hdr->Checksum = oldChecksum;
+        SetColor(COLOR_BAD);
+        Print(L"  %s  checksum failed, rolled back\n", label);
+        SetColor(COLOR_NORMAL);
+        return FALSE;
+    }
 
     SetColor(COLOR_OK);
     Print(L"  %s  OEM ", label);
@@ -127,7 +141,8 @@ static void PatchAcpiHeader(RD_ACPI_HEADER* hdr, const CHAR16* label)
     SetColor(COLOR_NORMAL);
     Print(L"  Rev 0x%08x \x1E 0x%08x  checksum %s\n",
           oldRev, hdr->OemRevision,
-          AcpiChecksum((const UINT8*)hdr, hdr->Length) == 0 ? L"OK" : L"BAD");
+          checksumOk ? L"OK" : L"BAD");
+    return TRUE;
 }
 
 void PatchAllAcpi(void)
@@ -212,8 +227,8 @@ void PatchAllAcpi(void)
                 SPrint(label, 16, L"  [SSDT#%d]", ssi);
             }
 
-            PatchAcpiHeader(hdr, label);
-            patched++;
+            if (PatchAcpiHeader(hdr, label))
+                patched++;
         }
     }
 
