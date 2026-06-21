@@ -7,6 +7,8 @@ The project focuses on firmware research, hardware diagnostics, SMBIOS/ACPI insp
 
 ## Preview
 
+
+
 <img width="874" height="1180" alt="rainbowdragon" src="https://github.com/user-attachments/assets/2544c888-b226-48fc-9412-3f6a17711bdb" />
 
 
