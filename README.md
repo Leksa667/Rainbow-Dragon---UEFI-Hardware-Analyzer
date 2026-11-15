@@ -27,6 +27,8 @@ The tool includes read-focused diagnostics as well as controlled in-memory SMBIO
 
 ## Features
 
+
+
 - Interactive UEFI menu interface
 - System overview screen
 - SMBIOS table detection, browsing, and detailed reporting
